@@ -1,0 +1,170 @@
+# Local toolchain mirrors Dataproc image 3.0.1-debian13
+# (Spark 4.1.2 / Scala 2.13.17 / Java 21) so `mise run run_job*` exercises the
+# same runtime as production. Keep in lockstep with pom.xml and IMAGE_VERSION
+# in dags/feature_store_merge_dag.py.
+[tools]
+java = "21.0.2"
+scala = "2.13.17"
+spark = "4.1.2"
+maven = "3.9.9"
+
+[env]
+JAVA_HOME = { value = "{{ tools.java.path }}", tools = true }
+SCALA_HOME = { value = "{{ tools.scala.path }}", tools = true }
+SPARK_HOME = { value = "{{ tools.spark.path }}/spark-4.1.2-bin-hadoop3", tools = true }
+SPARK_LOCAL_IP = "127.0.0.1"
+EDITOR = "vim"
+JAR = "target/feature-store-ds-merge-1.0.0.jar"
+#WAREHOUSE = "{{ config_root }}/warehouse"
+WAREHOUSE = "/tmp/warehouse"
+# Drives spark.sql.shuffle.partitions below. MUST match numBuckets in
+# conf/job*.properties -- the job bucketBy()s on that property, and a shuffle
+# width that disagrees with it costs an extra exchange before the write.
+BUCKETS = "256"
+
+[tasks.build]
+description = "Compile and package the job"
+run = "mvn -B -q clean package"
+
+[tasks.gerate_dataSets]
+description = "Generate DataSet for tests"
+dir = "{{ config_root }}"
+run = """
+  exec spark-shell \
+    --master "local[*]" \
+    --driver-memory 4g \
+    --conf spark.ui.enabled=false \
+    -i conf/generate_dataset_like_calc_vps.scala
+"""
+
+[tasks.run_job1]
+description = "Run the merge job"
+#depends = ["build"]
+dir = "{{ config_root }}"
+run = """
+$SPARK_HOME/bin/spark-submit \
+  --class fs.FeatureStoreMerge \
+  --master "local[*]" \
+  --files conf/job1.properties \
+  --conf spark.scheduler.mode=FAIR \
+  --conf spark.sql.sources.partitionOverwriteMode=dynamic \
+  --conf spark.sql.requireAllClusterKeysForCoPartition=false \
+  --conf spark.sql.shuffle.partitions="$BUCKETS" \
+  --conf spark.sql.warehouse.dir="$WAREHOUSE" \
+  --conf spark.driver.extraJavaOptions="-Dderby.system.home=$WAREHOUSE" \
+  "$JAR"
+"""
+
+[tasks.run_job2]
+description = "Run the merge job"
+#depends = ["build"]
+dir = "{{ config_root }}"
+run = """
+$SPARK_HOME/bin/spark-submit \
+  --class fs.FeatureStoreMerge \
+  --master "local[*]" \
+  --files conf/job2.properties \
+  --conf spark.scheduler.mode=FAIR \
+  --conf spark.sql.sources.partitionOverwriteMode=dynamic \
+  --conf spark.sql.requireAllClusterKeysForCoPartition=false \
+  --conf spark.sql.shuffle.partitions="$BUCKETS" \
+  --conf spark.sql.warehouse.dir="$WAREHOUSE" \
+  --conf spark.driver.extraJavaOptions="-Dderby.system.home=$WAREHOUSE" \
+  "$JAR"
+"""
+
+
+[tasks.run_job3]
+description = "Run the merge job"
+#depends = ["build"]
+dir = "{{ config_root }}"
+run = """
+$SPARK_HOME/bin/spark-submit \
+  --class fs.FeatureStoreMerge \
+  --master "local[*]" \
+  --files conf/job3.properties \
+  --conf spark.scheduler.mode=FAIR \
+  --conf spark.sql.sources.partitionOverwriteMode=dynamic \
+  --conf spark.sql.requireAllClusterKeysForCoPartition=false \
+  --conf spark.sql.shuffle.partitions="$BUCKETS" \
+  --conf spark.sql.warehouse.dir="$WAREHOUSE" \
+  --conf spark.driver.extraJavaOptions="-Dderby.system.home=$WAREHOUSE" \
+  "$JAR"
+"""
+
+
+
+[tasks.run_job4]
+description = "Run the merge job"
+#depends = ["build"]
+dir = "{{ config_root }}"
+run = """
+$SPARK_HOME/bin/spark-submit \
+  --class fs.FeatureStoreMerge \
+  --master "local[*]" \
+  --files conf/job4.properties \
+  --conf spark.scheduler.mode=FAIR \
+  --conf spark.sql.sources.partitionOverwriteMode=dynamic \
+  --conf spark.sql.requireAllClusterKeysForCoPartition=false \
+  --conf spark.sql.shuffle.partitions="$BUCKETS" \
+  --conf spark.sql.warehouse.dir="$WAREHOUSE" \
+  --conf spark.driver.extraJavaOptions="-Dderby.system.home=$WAREHOUSE" \
+  "$JAR"
+"""
+
+
+[tasks.run_job5]
+description = "Run the merge job"
+#depends = ["build"]
+dir = "{{ config_root }}"
+run = """
+$SPARK_HOME/bin/spark-submit \
+  --class fs.FeatureStoreMerge \
+  --master "local[*]" \
+  --files conf/job5.properties \
+  --conf spark.scheduler.mode=FAIR \
+  --conf spark.sql.sources.partitionOverwriteMode=dynamic \
+  --conf spark.sql.requireAllClusterKeysForCoPartition=false \
+  --conf spark.sql.shuffle.partitions="$BUCKETS" \
+  --conf spark.sql.warehouse.dir="$WAREHOUSE" \
+  --conf spark.driver.extraJavaOptions="-Dderby.system.home=$WAREHOUSE" \
+  "$JAR"
+"""
+
+
+[tasks.shell]
+description = "Spark shell preloaded with conf/exploration.scala"
+interactive = true
+raw_args = true
+dir = "{{ config_root }}"
+run = """
+exec $SPARK_HOME/bin/spark-shell \
+  --driver-memory 6g \
+  --conf spark.ui.enabled=false \
+  --master "local[*]" \
+  --conf spark.sql.requireAllClusterKeysForCoPartition=false \
+  --conf spark.sql.warehouse.dir="$WAREHOUSE" \
+  --conf spark.driver.extraJavaOptions="-Dderby.system.home=$WAREHOUSE" \
+  -i conf/exploration.scala
+"""
+
+
+[tasks.shell_clear]
+description = "Spark shell preloaded with conf/exploration.scala"
+interactive = true
+raw_args = true
+dir = "{{ config_root }}"
+run = """
+exec $SPARK_HOME/bin/spark-shell \
+  --driver-memory 6g \
+  --conf spark.ui.enabled=false \
+  --master "local[*]" \
+  --conf spark.sql.requireAllClusterKeysForCoPartition=false \
+  --conf spark.sql.warehouse.dir="$WAREHOUSE" \
+  --conf spark.driver.extraJavaOptions="-Dderby.system.home=$WAREHOUSE"
+"""
+
+
+[tasks.clean]
+description = "Drop build output and the local warehouse/metastore"
+run = "mvn -B -q clean && rm -rf $WAREHOUSE"

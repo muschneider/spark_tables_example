@@ -1,0 +1,58 @@
+# Build output
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Scala/Java
+*.log
+.bloop/
+.metals/
+.bsp/
+.cache
+.cache-*
+*.tmp
+
+# Maven
+.mvn/wrapper/maven-wrapper.jar
+dependency-reduced-pom.xml
+
+# IDE files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.project
+.classpath
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment and secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Spark
+spark-warehouse/
+derby.log
+metastore_db/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Logs
+logs/
+*.log

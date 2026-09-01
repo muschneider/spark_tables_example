@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>fs</groupId>
+  <artifactId>feature-store-ds-merge</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <!--
+      Pinned to Dataproc image 3.0.1-debian13, which ships
+      Spark 4.1.2 / Scala 2.13.17 / Java 21.
+
+      These three must move in lockstep with IMAGE_VERSION in
+      dags/feature_store_merge_dag.py and with mise.toml. Every Spark dep is
+      `provided`, so the cluster's own jars win at runtime: compiling against
+      a version the image does not have fails in production, not here.
+    -->
+    <java.version>21</java.version>
+    <scala.version>2.13.17</scala.version>
+    <scala.binary.version>2.13</scala.binary.version>
+    <spark.version>4.1.2</spark.version>
+    <maven.compiler.release>${java.version}</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-sql_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- persistent catalog: bucketing requires a metastore-backed table -->
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hive_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <sourceDirectory>src/main/scala</sourceDirectory>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+        <version>4.9.5</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <scalaVersion>${scala.version}</scalaVersion>
+          <args>
+            <arg>-release</arg>
+            <arg>${java.version}</arg>
+            <arg>-deprecation</arg>
+          </args>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>
