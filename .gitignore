@@ -1,5 +1,6 @@
 # Build output
 target/
+conf/
 *.class
 *.jar
 *.war
@@ -52,6 +53,7 @@ metastore_db/
 *.temp
 *.bak
 *.orig
+src.tar.gz
 
 # Logs
 logs/

@@ -149,6 +149,19 @@ exec $SPARK_HOME/bin/spark-shell \
 """
 
 
+[tasks.join_example]
+description = "Spark shell Join Example"
+interactive = true
+raw_args = true
+dir = "{{ config_root }}"
+run = """
+spark-shell --master "local[*]" \
+  --conf spark.sql.warehouse.dir=/tmp/warehouse \
+  --conf spark.driver.extraJavaOptions=-Dderby.system.home=/tmp/warehouse \
+  -i conf/join_example.scala
+"""
+
+
 [tasks.shell_clear]
 description = "Spark shell preloaded with conf/exploration.scala"
 interactive = true
