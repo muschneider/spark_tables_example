@@ -11,6 +11,7 @@ import java.util.Properties
 import java.util.concurrent.Executors
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.util.Success
 
 /** Splits a parquet dataset into feature tables, one per entry of `tableConfig`.
   *
@@ -19,6 +20,10 @@ import scala.concurrent.{Await, ExecutionContext, Future}
   *
   * A configured table the input feeds no column of is skipped: the dataset has nothing to say about it, and writing it would only
   * materialize NULLs.
+  *
+  * One table failing does not stop the others. Every table is attempted, each failure is logged against its own table name as it
+  * happens, and the run then exits non-zero naming all of them. Failing fast would only kill the other lanes mid-write and bury the one
+  * exception that matters.
   *
   * Optional properties, all with production-safe defaults:
   *   - `maxConcurrentTables` (8) how many tables to build at once
@@ -81,69 +86,93 @@ object FeatureStoreMerge {
         val pool = Executors.newFixedThreadPool((lanes min tables.size) max 1)
         implicit val ec: ExecutionContext = ExecutionContext.fromExecutorService(pool)
 
-        try
-            Await.result(
-                Future.traverse(tables) { case (table, cols) =>
-                    Future {
-                        val name = s"$db.$table"
-                        val target = if (spark.catalog.tableExists(name)) Some(spark.table(name)) else None
-                        val fed = cols.filter(c => srcCols(c.toLowerCase))
-                        val isFed = fed.map(_.toLowerCase).toSet
+        /** Builds one configured table from the input. One lane of the pool above; everything else it needs is already resolved. */
+        def merge(table: String, cols: List[String]): Unit = {
+            val name = s"$db.$table"
+            val target = if (spark.catalog.tableExists(name)) Some(spark.table(name)) else None
+            val fed = cols.filter(c => srcCols(c.toLowerCase))
+            val isFed = fed.map(_.toLowerCase).toSet
 
-                        // every configured column, the absent ones as NULL typed after the stored table when it exists. Only for the paths
-                        // with no stored row to read those columns from.
-                        lazy val widened = src.select(cols.map { c =>
-                            if (isFed(c.toLowerCase)) col(c)
-                            else lit(null).cast(target.flatMap(_.schema.find(_.name.equalsIgnoreCase(c))).fold(fallback)(_.dataType)).as(c)
+            // every configured column, the absent ones as NULL typed after the stored table when it exists. Only for the paths
+            // with no stored row to read those columns from.
+            lazy val widened = src.select(cols.map { c =>
+                if (isFed(c.toLowerCase)) col(c)
+                else lit(null).cast(target.flatMap(_.schema.find(_.name.equalsIgnoreCase(c))).fold(fallback)(_.dataType)).as(c)
+            } ++ Seq(col(key), col(date)): _*)
+
+            target match {
+                case None =>
+                    widened
+                        .repartition(buckets, col(key)) // one file per bucket
+                        .write
+                        .partitionBy(date)
+                        .bucketBy(buckets, key)
+                        .sortBy(key)
+                        .saveAsTable(name)
+
+                case Some(t) if stored(spark, name, date, dates) =>
+                    // Only the columns the input actually feeds cross the shuffle: for a column it does not feed,
+                    // coalesce(null, t.c) is just t.c, so it is read from the target instead -- which never moves, being
+                    // already bucketed on the join key.
+                    //
+                    // MEASURED: this is NOT a speed-up. Spark already derives it. NullPropagation rewrites
+                    // coalesce(Literal(null), t.c) to t.c, and ColumnPruning then drops the unreferenced null literals from
+                    // the projection under the exchange. Projecting all 200 columns and projecting only the 20 fed ones
+                    // produce the same physical plan -- input-side exchange 22 attributes, input scan 22 columns -- and the
+                    // same shuffle bytes (36.52 MB, 73.0 B/record, 500k rows, 20-of-200 fed). Written out explicitly only so
+                    // the intent is visible in the source. Do not "optimize" the wide form back in expecting a win.
+                    val staged = src.select(fed.map(col) ++ Seq(col(key), col(date)): _*)
+                    val slice = t.where(col(date).isin(dates: _*))
+                    if (assertSuperset) requireSuperset(staged, slice, key, name, dates)
+
+                    // the input drives the join (it never has fewer rows) and its non-null values win
+                    staged
+                        .as("s")
+                        .join(slice.as("t").hint("merge"), Seq(key, date), "left")
+                        .select(cols.map { c =>
+                            if (isFed(c.toLowerCase)) coalesce(col(s"s.$c"), col(s"t.$c")).as(c) else col(s"t.$c").as(c)
                         } ++ Seq(col(key), col(date)): _*)
+                        .write
+                        .mode("overwrite")
+                        .insertInto(name)
 
-                        target match {
-                            case None =>
-                                widened
-                                    .repartition(buckets, col(key)) // one file per bucket
-                                    .write
-                                    .partitionBy(date)
-                                    .bucketBy(buckets, key)
-                                    .sortBy(key)
-                                    .saveAsTable(name)
-
-                            case Some(t) if stored(spark, name, date, dates) =>
-                                // Only the columns the input actually feeds cross the shuffle: for a column it does not feed,
-                                // coalesce(null, t.c) is just t.c, so it is read from the target instead -- which never moves, being
-                                // already bucketed on the join key.
-                                //
-                                // MEASURED: this is NOT a speed-up. Spark already derives it. NullPropagation rewrites
-                                // coalesce(Literal(null), t.c) to t.c, and ColumnPruning then drops the unreferenced null literals from
-                                // the projection under the exchange. Projecting all 200 columns and projecting only the 20 fed ones
-                                // produce the same physical plan -- input-side exchange 22 attributes, input scan 22 columns -- and the
-                                // same shuffle bytes (36.52 MB, 73.0 B/record, 500k rows, 20-of-200 fed). Written out explicitly only so
-                                // the intent is visible in the source. Do not "optimize" the wide form back in expecting a win.
-                                val staged = src.select(fed.map(col) ++ Seq(col(key), col(date)): _*)
-                                val slice = t.where(col(date).isin(dates: _*))
-                                if (assertSuperset) requireSuperset(staged, slice, key, name, dates)
-
-                                // the input drives the join (it never has fewer rows) and its non-null values win
-                                staged
-                                    .as("s")
-                                    .join(slice.as("t").hint("merge"), Seq(key, date), "left")
-                                    .select(cols.map { c =>
-                                        if (isFed(c.toLowerCase)) coalesce(col(s"s.$c"), col(s"t.$c")).as(c) else col(s"t.$c").as(c)
-                                    } ++ Seq(col(key), col(date)): _*)
-                                    .write
-                                    .mode("overwrite")
-                                    .insertInto(name)
-
-                            case _ =>
-                                widened.repartition(buckets, col(key)).write.mode("overwrite").insertInto(name)
-                        }
-                    }
-                },
-                Duration.Inf
-            )
-        finally {
-            pool.shutdown()
-            spark.stop()
+                case _ =>
+                    widened.repartition(buckets, col(key)).write.mode("overwrite").insertInto(name)
+            }
         }
+
+        // Every lane is recovered into its outcome, deliberately: `Future.traverse` is fail-fast, and a fail-fast aggregate here
+        // completes on the FIRST failure while the other lanes are still mid-write -- leaving the shutdown below to stop the
+        // SparkContext underneath them. Their jobs then die as "SparkContext was shut down", their completion callbacks are refused by
+        // the pool that was just shut down (RejectedExecutionException), and the AM reporter thread reports the interrupt. The one
+        // exception that actually explains the run drowns in that, and WHICH failure surfaces first is a race between threads.
+        //
+        // Nothing is bought by failing early either: the futures are all submitted up front, so the remaining lanes keep running
+        // regardless -- fail-fast only killed them halfway. Run them all, report each failure against its table.
+        val outcomes =
+            try
+                Await.result(
+                    Future.traverse(tables) { case (table, cols) =>
+                        Future(merge(table, cols)).transform { done =>
+                            // logged here, not at the end, so the stack trace lands next to that table's own log lines
+                            done.failed.foreach(e => log.error(s"$db.$table failed", e))
+                            Success(table -> done.failed.toOption)
+                        }
+                    },
+                    Duration.Inf
+                )
+            finally {
+                pool.shutdown() // the pool's threads are not daemons: without this the JVM never exits
+                spark.stop()
+            }
+
+        val failures = outcomes.collect { case (table, Some(e)) => s"$db.$table" -> e }
+        if (failures.nonEmpty)
+            // the first cause is attached so spark-submit's own "Exception in thread main" carries it too
+            throw new RuntimeException(
+                s"${failures.size} of ${tables.size} table(s) failed: ${failures.map(_._1).mkString(", ")}",
+                failures.head._2
+            )
     }
 
     /** A property that may be absent; blank counts as absent. */
